@@ -1,0 +1,434 @@
+---
+title: "Script for FDSS ML"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+#00 Publication information
+```{r}
+# Author: Chris McGraw, chris.mcgraw@gmail.com, christopher.mcgraw@northwestern.edu
+# Version 1. 1-14-2025
+# For release with manuscript, McGraw et al EJP 2025.
+# Reference (Biorxiv) doi: https://doi.org/10.1101/2024.08.01.606228
+```
+
+# 01 Load functions and data 
+```{r}
+##0.1.0 libraries
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(ggpubr)
+library(rlang)
+library(xlsx)
+
+sessionInfo()   # versions of packages used in the development of this code
+# R version 3.6.3 (2020-02-29)
+# Platform: x86_64-pc-linux-gnu (64-bit)
+# Running under: Ubuntu 18.04.6 LTS
+# 
+# Matrix products: default
+# BLAS:   /usr/lib/x86_64-linux-gnu/blas/libblas.so.3.7.1
+# LAPACK: /usr/lib/x86_64-linux-gnu/lapack/liblapack.so.3.7.1
+# 
+# locale:
+#  [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C               LC_TIME=en_US.UTF-8       
+#  [4] LC_COLLATE=en_US.UTF-8     LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8   
+#  [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                  LC_ADDRESS=C              
+# [10] LC_TELEPHONE=C             LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C       
+# 
+# attached base packages:
+# [1] stats     graphics  grDevices utils     datasets  methods   base     
+# 
+# other attached packages:
+# [1] rlang_1.1.3     ggpubr_0.4.0    patchwork_1.1.1 ggplot2_3.4.0   dplyr_1.1.0    
+# 
+# loaded via a namespace (and not attached):
+#  [1] tidyselect_1.2.1  xfun_0.37         bslib_0.2.4       purrr_1.0.1      
+#  [5] haven_2.5.1       carData_3.0-4     colorspace_2.0-0  vctrs_0.6.5      
+#  [9] generics_0.1.0    htmltools_0.5.4   yaml_2.3.8        utf8_1.1.4       
+# [13] jquerylib_0.1.3   pillar_1.8.1      foreign_0.8-76    glue_1.7.0       
+# [17] withr_3.0.0       readxl_1.3.1      lifecycle_1.0.4   stringr_1.5.0    
+# [21] cellranger_1.1.0  munsell_0.5.0     ggsignif_0.6.1    gtable_0.3.0     
+# [25] zip_2.1.1         evaluate_0.20     knitr_1.42        rio_0.5.16       
+# [29] forcats_0.5.1     fastmap_1.1.0     curl_4.3          fansi_0.4.2      
+# [33] broom_0.7.9       Rcpp_1.0.12       scales_1.2.1      backports_1.4.1  
+# [37] jsonlite_1.8.8    abind_1.4-5       hms_1.0.0         digest_0.6.27    
+# [41] stringi_1.5.3     openxlsx_4.2.3    rstatix_0.7.0     grid_3.6.3       
+# [45] cli_3.6.2         tools_3.6.3       magrittr_2.0.3    sass_0.4.5       
+# [49] tibble_3.1.8      tidyr_1.3.0       car_3.0-10        pkgconfig_2.0.3  
+# [53] ellipsis_0.3.2    data.table_1.14.0 rmarkdown_2.7     rstudioapi_0.16.0
+# [57] R6_2.5.1          compiler_3.6.3   
+
+```
+## load data
+```{r}
+##01.1 directories
+rootDirec<-"/data/03 Analysis/AED analysis/FDSS machine learning/" #trailing slash  <-- change to desired directory
+
+codeDirec<-paste0(rootDirec,'01 Code/')  # location of helper functions
+scriptDirec<-paste0(rootDirec,'02 Scripts/')  # location of this script
+dataDirec<-paste0(rootDirec,'03 Data/')  # location of data (.RData)
+resultsDirec<-paste0(rootDirec,'04 Results/') # location to output results from this script
+
+# source from code
+ sourceDir <- function(path, trace = TRUE, ...) {
+    for (nm in list.files(path, pattern = "[.][RrSsQq]$")) {
+       if(trace) cat(nm,":")
+       source(file.path(path, nm), ...)
+       if(trace) cat("\n")
+    }
+ }
+ 
+sourceDir(codeDirec)  #load helper functions 
+
+##01.2 load data 
+spikes5<-readRDS(file=paste0(dataDirec,"spikes5.RData"))    # event data from PTZ/VPA expts
+cafs3<-readRDS(file=paste0(dataDirec,"cafs3.RData"))        # fish data from PTZ/VPA expts
+spikes5_tgb<-readRDS(file=paste0(dataDirec,"spikes5_tgb.RData"))   # event data from PTZ/TGB expts
+cafs3_tgb<-readRDS(file=paste0(dataDirec,"cafs3_tgb.RData"))       # fish data from PTZ/TGB expts
+
+cafs_mf_all.old<-readRDS(file=paste0(dataDirec,"cafs_mf_all.RData"))    # assembled PTZ/VPA data after prediction
+cafs_tgb.old<-readRDS(file=paste0(dataDirec,"cafs_tgb.RData"))          # assembled PTZ/TGB data after prediction 
+
+```
+# 02 Train and compare models
+```{r}
+#02.1 Pre-process data 
+library(MLeval)
+library(caret)
+
+spikes5_paper<-spikes5
+spikes5_paper <- spikes5 %>% filter(
+                        Genotype=="01_veh",
+                        #totalCentroidSize_mode_mm2>0.05,
+                        MaxIntensity_F_F0_centroid >0.1, # pre-select 
+                        expt_date == "2020-09-23-1" |  expt_date=="2020-09-23-2",
+                        Conditions == "01_baseline" | Conditions == "04b_15mM PTZ" | Conditions == "01_baseline_veh",
+                        Alive_after == "y") %>% droplevels()
+
+spikes_forCV_test<-spikes5_paper;
+spikes_forCV_test$Conditions_code <- NA
+spikes_forCV_test$Conditions_code[spikes_forCV_test$Conditions == "01_baseline"] <- 1
+spikes_forCV_test$Conditions_code[spikes_forCV_test$Conditions == "01_baseline_veh"] <- 1
+spikes_forCV_test$Conditions_code[spikes_forCV_test$Conditions == "04b_15mM PTZ"] <- 0
+spikes_forCV_test$Conditions_code <- as.factor(spikes_forCV_test$Conditions_code)
+spikes_forCV_test$totalCentroidSize_mode_mm2<-round(spikes_forCV_test$totalCentroidSize_mode_mm2,2)
+
+index <- createDataPartition(spikes_forCV_test$Conditions_code, p = .70, list = FALSE)
+train <- spikes_forCV_test[index,]
+test <- spikes_forCV_test[-index,]
+
+#02.2 Define formulas 
+
+# Movement + Fluorescence
+thisFormula<-quote(Conditions_names ~ (MaxIntensity_F_centroid+ MaxIntensity_F_F0_centroid + distance_xy_mm + duration_sec + maxVeloc_xy_mm_sec + totalRevolutions_perEvent)*(maxRange_2 + totalCentroidSize_mode_mm2))
+
+thisFormula.noInt<-quote(Conditions_names ~ (MaxIntensity_F_centroid+ MaxIntensity_F_F0_centroid + distance_xy_mm + duration_sec + maxVeloc_xy_mm_sec + totalRevolutions_perEvent + maxRange_2 + totalCentroidSize_mode_mm2))
+
+#Fluorescence only
+thisFormula.fluor<-quote(Conditions_names ~ (MaxIntensity_F_centroid+ MaxIntensity_F_F0_centroid + duration_sec)*(maxRange_2 + totalCentroidSize_mode_mm2))
+
+thisFormula.fluor.noInt<-quote(Conditions_names ~ (MaxIntensity_F_centroid+ MaxIntensity_F_F0_centroid + duration_sec + maxRange_2 + totalCentroidSize_mode_mm2))
+
+#Movement only
+thisFormula.movt<-quote(Conditions_names ~ (maxVeloc_xy_mm_sec+distance_xy_mm))
+thisFormula.movt.Int<-quote(Conditions_names ~ (maxVeloc_xy_mm_sec+distance_xy_mm)*(maxRange_2+totalCentroidSize_mode_mm2))
+
+#02.3 Train models
+model.mf_test_x1<-fct_trainModel(train, test, thisFormula,weight=FALSE)
+model.m_test_x1<-fct_trainModel(train, test, thisFormula.movt,weight=FALSE)
+model.f_test_x1<-fct_trainModel(train, test, thisFormula.fluor,weight=FALSE)
+model.mf_test_noInt_x1<-fct_trainModel(train, test, thisFormula.noInt,weight=FALSE)
+model.f_test_noInt_x1<-fct_trainModel(train, test, thisFormula.fluor.noInt,weight=FALSE)
+
+#02.4 Evaluate cross-validated performance model 
+# new models
+res_test_x1 <- evalm(list(model.mf_test_x1,model.m_test_x1,model.f_test_x1,
+                          model.mf_test_noInt_x1,model.f_test_noInt_x1),
+                     gnames=c('M+F','Movt','Fluorescence','M+F no int', 'F no int'), 
+                     rlinethick=0.8, fsize=8, plots='r',positive="X1")
+
+res_test_x1
+
+###### previously used models
+model.mf.old <-readRDS(file=paste0(dataDirec,"model_mf.RData"))
+model.movt.old <-readRDS(file=paste0(dataDirec,"model_movt.RData"))
+model.fluor.old <-readRDS(file=paste0(dataDirec,"model_fluor.RData"))
+
+res_old_X1 <- evalm(list(model.mf.old,model.movt.old,model.fluor.old),gnames=c('M+F','Movt ','Fluorescence'), rlinethick=0.8, fsize=8, plots='r',positive="X1")
+
+res_old_X1
+
+#02.5 Save results to disk
+library(xtable)
+library(openxlsx)
+exptTitle<-"ML models"
+subtitle<-"_PTZ models_" 
+resultsSubDir="01 model performance"
+fct_saveImagesFromMLEval(res_test_x1, exptTitle, subtitle, paste0(resultsDirec,"/",resultsSubDir),4,4)
+fct_makeTableFromMLEval(res_test_x1,"stats",exptTitle, subtitle, paste0(resultsDirec,"/",resultsSubDir))
+
+```
+#03 Review results at fish-level
+```{r}
+#03.1 Generate fish-level data based on a specific model
+
+# construct filename 
+exptTitle<-"FDSS ML"      #part1
+subtitle<-"_PTZ VPA"  #part2
+resultsSubDir="02 PTZ VPA" #results subdirectory
+thisFile=paste0(exptTitle,subtitle,"_fig")     # final filename
+# thisDirec= file.path(wdirec,"04 Results", paste0(resultsDirec,"/",resultsSubDir)  # path for results 
+                     
+thisDirec= file.path(paste0(resultsDirec,"/",resultsSubDir))  # path for results 
+
+cafs_mf_all.old<-fct_perFishAvg_NA(spikes5,cafs3,model.mf.old)    # regenerate data from saved model
+cafs_mf_all2<-fct_perFishAvg_NA(spikes5,cafs3,model.mf_test_x1)   # generate predictions from new model
+
+cafs_visualize<-cafs_mf_all.old
+
+cafs_visualize<-cafs_mf_all2
+
+cafs_visualize <- droplevels((filter(cafs_visualize, 
+                        expt_date == "2020-09-23-2",
+                        totalCentroidSize_mode_mm2>0.05,
+                        Alive_after == "y")))
+
+levels(cafs_visualize$expt_date)
+xtabs(~Treatment + Conditions +expt_date, data=filter(cafs_visualize,classPredicted3=="X2"))
+# , , expt_date = 2020-09-23-2
+# 
+#               Conditions
+# Treatment      01_baseline 01_baseline_veh 03b_2-5mM PTZ 04b_15mM PTZ
+#   01_veh                32              32            32           32
+#   02_VPA_short          32              32            32           32
+#   03_VPA_long           29              29            29           29
+
+cafs_visualize$Genotype_combined<-paste0("PTZ",cafs_visualize$PTZ,"_Treatment", cafs_visualize$Treatment)
+cafs_visualize$Genotype_combined<-as.factor(cafs_visualize$Genotype_combined)
+levels(cafs_visualize$Genotype_combined)
+
+cafs_visualize$Facet<-"Dummy"
+cafs_visualize$Facet<-as.factor(cafs_visualize$Facet)
+levels(cafs_visualize$Facet)
+
+# inputs to figure generating function 
+theseCafs <-list(cafs_visualize)       # datasets
+theseCafs_labels<-c("cafs_visualize")  # labels for datasets
+thisX <- expr(as.factor(Genotype_combined))   # independent variable (X) for x-axis on figures
+thisGroup <-expr(Genotype_combined)           # grouping variable
+thisFacet <-expr(Facet)                  # faceting variable
+theseEventtype = c("X0","X1","X2")            # event types for which to generate figures
+figTitle0="PTZ VPA short long"                # title for top of each figure
+# thisFilter <- quos(PTZ==0, is.element(Genotype_combined2,theseLevels[c(9,7,8)]))   # kcnv1 wt het hom
+thisFilter <- quos(PTZ>-1)              # filter (exclude these cases)
+theseLevels<-levels(cafs_visualize$Genotype_combined)  # levels (should be for same used for thisX)
+thisStatRef=theseLevels[1]                    # level used as "control" for stats 
+
+img_h=4; img_w=24;
+# theseMeasures = quos(rate_perMin, totalDistance_events) 
+
+theseMeasures1 = quos(rate_perMin, MaxIntensity_F_F0_centroid_avg, distance_xy_mm_avg, maxVeloc_xy_mm_sec_avg, totalRevolutions_perEvent_avg,timeSpentMoving_xy_sec_prct_avg,totalDistance_events) 
+
+theseMeasures2 = quos(totalTime_min, totalCentroidSize_mode_mm2,
+                      mean_MaxChange_Intensity_F_F0_centroid, duration_sec_avg,
+                      meanVeloc_xy_mm_sec_avg,MaxIntensity_F_centroid_avg,
+                      MinIntensity_F_centroid_avg)
+
+# fct_outputFigures
+#  A wrapper function for calling fct_plotGroupAvgs4 over long lists of measures
+#  Generates PNG/EPS/SVG/RDS for all measures referenced in Measures1/2 ("..._fig XXX"), then generates individual PNG/EPS/SVG/RDS 
+#  for each of these measures ("..._fig XXX_Y"), saves all the data from each figure (with stats) into an XLSX  ("..._fig 
+#  XXX_Y_data.xlsx). 
+fct_outputFigures(theseCafs,theseCafs_labels,theseEventtype,thisFilter, thisX, thisGroup,thisFacet, thisFile, thisDirec,figTitle0, theseMeasures1,theseMeasures2,thisStatRef,img_h,img_w)
+
+```
+```{r}
+
+fct_outputFigures<-function(theseCafs,theseCafs_labels,theseEventtype,theseGenotypes,thisFilter, thisX, thisGroup,thisFacet, thisFile, thisDirec,figTitle0, theseMeasures1,theseMeasures2,thisStatRef,img_h,img_w,keepXAxis="n",rotateXLabels="n",groupLines="y") {
+  # start for loop
+  for (k in 1:length(theseCafs)) {
+    
+    thisData <-theseCafs[[k]]
+    
+    for (j in 1:length(theseEventtype)){
+      
+      theseEventtype[j]
+      thisFilter_events <- quos(classPredicted3==theseEventtype[j])
+      
+      figTitle=paste0(figTitle0, theseEventtype[j],"\n",
+                      theseCafs_labels[k])
+      
+      thisData_f <- thisData %>% filter(!!!thisFilter_events) %>% droplevels() %>% ungroup()
+      thisData_f <- thisData_f %>% filter(!!!thisFilter) %>% droplevels() %>% ungroup()
+      
+      p3_scn1lab1 <- fct_plotGroupAvgs4(thisX,theseMeasures1,thisFilter,thisGroup,thisFacet,
+                                        thisData_f,groupLines=groupLines,
+                                        keepXAxis = keepXAxis,rotateXLabels = rotateXLabels, stats="y",
+                                        stats_ref_group =thisStatRef,generateSummaryData="y")
+      
+      p3_scn1lab2 <- fct_plotGroupAvgs4(thisX,theseMeasures2,thisFilter,thisGroup,thisFacet,
+                                        thisData_f,groupLines=groupLines,
+                                        keepXAxis = keepXAxis,rotateXLabels = rotateXLabels, stats="y",
+                                        stats_ref_group = thisStatRef,generateSummaryData="y")
+      
+      p3_scn1lab_plots <- p3_scn1lab1[[1]]
+      p3_scn1lab_data <- p3_scn1lab1[[2]]
+      
+      p4 <- p3_scn1lab_plots + plot_annotation(figTitle,paste(as.character(thisFilter),collapse=" "))
+      
+      saveimages(p4,thisFile,thisDirec,h=img_h,w=img_w)
+      savedata(p3_scn1lab_data, thisFile, thisDirec, h=6, w=4, figTitle=figTitle)
+      
+      p3_scn1lab_plots <- p3_scn1lab2[[1]]
+      p3_scn1lab_data <- p3_scn1lab2[[2]]
+      
+      p4 <- p3_scn1lab_plots + plot_annotation(figTitle,paste(as.character(thisFilter),collapse=" "))
+      
+      saveimages(p4,thisFile,thisDirec,h=img_h,w=img_w)
+      savedata(p3_scn1lab_data, thisFile, thisDirec, h=6, w=4, figTitle=figTitle)
+      
+    }
+  }
+}
+```
+
+#04 Bootstrap simulation 
+```{r}
+library(moderndive)
+
+#04.1 combine datasets 
+cafs_tgb_vpa_combined <- bind_rows(cafs_tgb.old, cafs_mf_all.old)
+
+cafs_tgb_vpa_combined_f<-cafs_tgb_vpa_combined %>% 
+  select(!comment) %>%
+  filter(totalCentroidSize_mode_mm2>0.05,
+         # classPredicted3=="X0",
+         expt_date=="2021-09-28_1" | expt_date=="2020-09-23-2" | expt_date=="2020-09-23-1" ) %>% droplevels()
+
+xtabs(~Treatment+PTZ+expt_date,data=cafs_tgb_vpa_combined_f)
+
+# create a new column Txt_lm to show treatment type or vehicle (pooled from both vehicle groups)
+cafs_tgb_vpa_combined_f$Txt_lm <- as.character(cafs_tgb_vpa_combined_f$Treatment)
+cafs_tgb_vpa_combined_f$Txt_lm[cafs_tgb_vpa_combined_f$Txt_lm=="02_dmso_1perct"]<-"vehicle"
+cafs_tgb_vpa_combined_f$Txt_lm[cafs_tgb_vpa_combined_f$Txt_lm=="01_veh"]<-"vehicle"
+cafs_tgb_vpa_combined_f$Txt_lm<-as.factor(cafs_tgb_vpa_combined_f$Txt_lm)
+levels(cafs_tgb_vpa_combined_f$Txt_lm)
+cafs_tgb_vpa_combined_f$Txt_lm<-fct_relevel(cafs_tgb_vpa_combined_f$Txt_lm,"vehicle")
+
+thisData_ssmd <- cafs_tgb_vpa_combined_f
+
+#04.2 Define inputs for bootstrap function 
+thisGroup = expr(Txt_lm)     # grouping variable
+thisX = expr(rate_perMin)    # the variable to compare
+
+# the target group ( a factor level in thisGroup, i.e. Txt_lm )
+theseTargets = c(quos(Txt_lm =="01_tgb_100um"),
+                 quos(Txt_lm== "02_VPA_short"),
+                 quos(Txt_lm== "03_VPA_long"))
+
+# the background group ( a factor level in thisGroup, i.e. Txt_lm )
+theseBkgds = c(quos(Txt_lm == "vehicle")) 
+
+# colors for graphical output
+theseColors <- c("#5df9ff","#ff5d75")
+
+# specify the comparisons (n,m) to bootstrap where n indexes theseTargets, m indexes theseBkgds
+theseTB = vector("list")
+theseTB[[1]]<-c(1,1) 
+theseTB[[2]]<-c(2,1)
+theseTB[[3]]<-c(3,1)
+
+PTZ_forSSMD = c(2.5,15) # levels of PTZ
+theseEventtype = c("X0","X2")  # which event types  (levels of classPredicted3 )
+theseBootSampleSizes = c(4,6,8,10,12,16,20,24)   # sample size for each bootstrap iteration
+# theseBootSampleSizes = c(6) 
+repNumber = 3000   #  number of bootstrap iterations
+
+thisMetric="robust_ssmd"   # the core statistic used to compare bootstrapped values of thisX between target v bkgd
+
+thisTitle="RSSMD PTZ (2.5, 15) X ASM (TGB, VPA_short, VPA_long)"
+
+# initialize results lists
+theseResults=theseResults2=theseResults3=theseResults4=theseResults5=vector("list")
+
+for (t in 1:length(theseTB)) {
+  
+  thisTarget = theseTargets[theseTB[[t]][[1]]]
+  thisTarget
+  thisBkgd = theseBkgds[theseTB[[t]][[2]]]
+  thisBkgd
+  
+  for (k in 1:length(PTZ_forSSMD)) {
+    thisPTZ = PTZ_forSSMD[[k]]
+    thisPTZ
+    
+    for (i in 1:length(theseEventtype)) {
+      thisEventtype = theseEventtype[[i]]
+      
+      cafs_forSSMD <- thisData_ssmd %>% filter(PTZ==thisPTZ,
+                                               classPredicted3 == thisEventtype) %>% droplevels() %>% ungroup()
+      
+      for (j in 1:length(theseBootSampleSizes)) {
+        ssmd_test <-fct_bootstrapSSMD2(cafs_forSSMD, thisX,thisGroup, thisTarget,thisBkgd,theseColors, 
+                                       bootSampleSize=theseBootSampleSizes[[j]], 
+                                       reps = repNumber,
+                                       replacement=TRUE,
+                                       thisMetric=thisMetric,
+                                       thisTitle=thisTitle)
+        theseResults[[j]]=ssmd_test
+      }
+      theseResults2[[i]]=theseResults
+    }
+    theseResults3[[k]]=theseResults2
+  }
+  
+  theseResults4[[t]]=theseResults3
+  
+}
+
+# theseResults4: a List of lists of lists with results from each bootstrap experiment
+
+```
+
+#05 Screen test
+```{r}
+#05.1 Load data
+spikes5_screen<-readRDS(paste0(dataDirec,"spikes5_screen.RData"))
+cafs3_screen<-readRDS(paste0(dataDirec,"cafs3_screen.RData"))
+model.mf.old<-readRDS(paste0(dataDirec,"model_mf.RData"))
+
+cafs_screen_f<-fct_perFishAvg_NA(spikes5_screen,cafs3_screen,model.mf.old)
+
+#05.2 Calculate SSMD/RSSMD pairwise for each "Txt X Dose X PTZ" level
+thisData<-cafs_screen_f
+
+thisData<- thisData %>% filter(
+  classPredicted3=="X0",totalCentroidSize_mode_mm2>0.05,Alive_after=="y") %>% droplevels()
+
+thisMeasure <- "rate_perMin"
+thisGroup <- "Txt_DoseXPTZ"
+results_1_test<- groupwise_test2(thisData, thisMeasure, thisGroup)
+# groupwise_test2 generates a table of SSMD/RSSMD values
+
+library(data.table)
+results_dt_test <-data.table(results_1_test)
+
+library(xlsx)
+write.xlsx(results_dt_test, 
+            file=paste0(resultsDirec,"results_SSMD_screen.xlsx"),
+             sheetName="data", 
+             col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
